@@ -112,9 +112,9 @@ Use este método se estiver usando os runners hospedados pelo próprio GitHub.
 
 ## 📄 Conteúdo Completo dos Arquivos
 
-Aqui está o código-fonte que você pode usar para criar os arquivos do seu projeto.
+Aqui está o código-fonte que você pode usar para criar os arquivos do seu projeto. Precisa alterar alguns valores, já que estão com um de base apenas.
 
-### `templates/github-actions-deploy-template.yml`
+### `.github/workflows/github-actions-deploy-template.yml`
 
 ```yaml
 # Workflow do GitHub Actions para Deploy usando um Runner do AWS CodeBuild
