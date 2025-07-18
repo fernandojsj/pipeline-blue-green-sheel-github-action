@@ -38,26 +38,6 @@ O fluxo de trabalho segue os seguintes passos:
     * Valida a saúde do novo container.
     * Se saudável, o container antigo ("Blue") é removido.
 
-```mermaid
-graph TD
-    A[Dev Push/Merge] --> B{GitHub Actions};
-    B --> C[1. Login & Build Docker Image];
-    C --> D[2. Push Image to Amazon ECR];
-    D --> E[3. Trigger AWS SSM Run Command];
-    subgraph "Instância EC2"
-        E --> F[4. SSM Agent recebe o comando];
-        F --> G{deploy-blue-green.sh};
-        G --> H[Busca secrets no Secrets Manager];
-        H --> I[Gera arquivo .env];
-        I --> J[Docker Pull da nova imagem do ECR];
-        J --> K[Inicia Container 'Green' em porta alternativa];
-        K --> L[Healthcheck no Container 'Green'];
-        L -- Sucesso --> M[Remove Container 'Blue'];
-        L -- Falha --> N[Cancela o deploy e remove 'Green'];
-    end
-
-```
-
 ## ⚙️ Como Funciona
 
 O processo de deploy é dividido em duas fases:
