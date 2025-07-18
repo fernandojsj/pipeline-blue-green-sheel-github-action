@@ -1,68 +1,117 @@
 #!/bin/bash
 
-set -e  # Para o script se qualquer comando falhar
+set -euo pipefail
 
-# 🔧 CONFIGURAÇÕES – Substitua os valores abaixo conforme seu ambiente
-SECRET_NAME="CAMINHO/DO/SECRET_NO_SECRETS_MANAGER"        # Ex: backend/development
-ENV_FILE="/caminho/para/.env"                             # Ex: /app/.env
-OLD_CONTAINER="nome-do-container-principal"               # Ex: minha-aplicacao
-NEW_CONTAINER="nome-do-container-novo"                    # Ex: minha-aplicacao-green
-IMAGE_NAME="CONTA.dkr.ecr.REGIAO.amazonaws.com/repo:tag"  # Ex: 123456789012.dkr.ecr.us-east-1.amazonaws.com/backend:latest
-PORT_OLD=8080
-PORT_NEW=8081
-HEALTHCHECK_PATH="/health"                                # Caminho de verificação de saúde
-HEALTHCHECK_TIMEOUT=15                                    # Tempo máximo de espera (segundos)
-AWS_REGION="REGIAO"                                       # Ex: us-east-1
+# ========== VARIÁVEIS CONFIGURÁVEIS ==========
+SECRET_NAME="backend/development"
+ENV_FILE="/app/.env"
+OLD_CONTAINER="minha-aplicacao"
+NEW_CONTAINER="minha-aplicacao-green"
+IMAGE_NAME="671941044004.dkr.ecr.us-east-1.amazonaws.com/development/backend:latest"
 
-echo "🔑 Autenticando no ECR..."
-aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$(echo "$IMAGE_NAME" | cut -d'/' -f1)"
+APP_PORT=8080              # Porta da aplicação
+GREEN_PORT=8081            # Porta temporária
+HEALTH_ENDPOINT="/health"  # Healthcheck
+CURL_TIMEOUT=15            # Timeout do healthcheck
 
-echo "📦 Baixando última imagem do ECR..."
+# ========== CAPTURA ERROS ==========
+handle_error() {
+  local exit_code=$?
+  local last_command="${BASH_COMMAND}"
+  echo "❌ ERRO: O comando '$last_command' falhou com código $exit_code"
+  echo "🛠️ Verifique os logs acima para mais detalhes."
+  exit $exit_code
+}
+trap 'handle_error' ERR
+
+deploy_start=$(date +%s)
+
+echo "::group::🔧 Preparação Inicial"
+echo "📌 Variáveis:"
+echo " - Secret: $SECRET_NAME"
+echo " - Imagem: $IMAGE_NAME"
+echo " - Porta principal: $APP_PORT"
+echo " - Porta green: $GREEN_PORT"
+echo " - Endpoint: $HEALTH_ENDPOINT"
+echo " - Timeout healthcheck: ${CURL_TIMEOUT}s"
+echo "::endgroup::"
+
+echo "::group::🔑 Autenticando no ECR..."
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS --password-stdin 671941044004.dkr.ecr.us-east-1.amazonaws.com
+echo "✅ Login bem-sucedido no ECR."
+echo "::endgroup::"
+
+echo "::group::📦 Baixando imagem do ECR..."
 docker pull "$IMAGE_NAME"
+echo "✅ Imagem '$IMAGE_NAME' baixada com sucesso."
+echo "::endgroup::"
 
-echo "📄 Gerando .env com secrets do Secrets Manager..."
-secret_json=$(aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --query SecretString --region "$AWS_REGION" --output text)
+echo "::group::📄 Gerando .env com secrets..."
 mkdir -p "$(dirname "$ENV_FILE")"
+secret_json=$(aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --query SecretString --region us-east-1 --output text)
 echo "$secret_json" | jq -r 'to_entries|map("\(.key)=\(.value)")|.[]' > "$ENV_FILE"
+echo "✅ Secrets exportados para '$ENV_FILE'."
+echo "::endgroup::"
 
-echo "🚀 Subindo novo container (green) na porta $PORT_NEW..."
+echo "::group::🚀 Iniciando container green ($NEW_CONTAINER)..."
 docker run -d \
   --env-file "$ENV_FILE" \
-  -p "$PORT_NEW:$PORT_OLD" \
+  -p "$GREEN_PORT:$APP_PORT" \
   --name "$NEW_CONTAINER" \
   "$IMAGE_NAME"
+echo "✅ Container '$NEW_CONTAINER' rodando na porta $GREEN_PORT."
+echo "::endgroup::"
 
-echo "🩺 Aguardando healthcheck no novo container por até $HEALTHCHECK_TIMEOUT segundos..."
+echo "::group::🩺 Healthcheck do container green..."
 start_time=$(date +%s)
 while true; do
-  if ! curl -fs "http://localhost:$PORT_NEW$HEALTHCHECK_PATH" > /dev/null; then
-    echo "❌ Healthcheck falhou. Removendo container green."
-    docker stop "$NEW_CONTAINER" && docker rm "$NEW_CONTAINER"
-    exit 1
+  if curl -fs "http://localhost:$GREEN_PORT$HEALTH_ENDPOINT" > /dev/null; then
+    echo "✅ Healthcheck OK!"
+    break
   fi
 
   current_time=$(date +%s)
   elapsed=$((current_time - start_time))
-  if [ "$elapsed" -ge "$HEALTHCHECK_TIMEOUT" ]; then
-    break
+
+  if [ "$elapsed" -ge "$CURL_TIMEOUT" ]; then
+    echo "❌ Healthcheck falhou após ${CURL_TIMEOUT}s."
+    docker stop "$NEW_CONTAINER" && docker rm "$NEW_CONTAINER"
+    echo "🧹 Container green removido."
+    exit 1
   fi
 
+  echo "⏳ Aguardando healthcheck... ($elapsed/${CURL_TIMEOUT}s)"
   sleep 1
 done
+echo "::endgroup::"
 
-echo "✅ Novo container saudável. Substituindo o antigo..."
-
+echo "::group::🔄 Removendo container antigo se existir..."
 if docker ps -a --format '{{.Names}}' | grep -qw "$OLD_CONTAINER"; then
-  docker stop "$OLD_CONTAINER" && docker rm "$OLD_CONTAINER"
+  docker stop "$OLD_CONTAINER"
+  docker rm "$OLD_CONTAINER"
+  echo "✅ Container antigo '$OLD_CONTAINER' removido."
+else
+  echo "ℹ️ Container antigo '$OLD_CONTAINER' não encontrado."
 fi
+echo "::endgroup::"
 
-docker stop "$NEW_CONTAINER" && docker rm "$NEW_CONTAINER"
+echo "::group::🚀 Promovendo container green para produção..."
+docker stop "$NEW_CONTAINER"
+docker rm "$NEW_CONTAINER"
 
-echo "🚀 Subindo container principal na porta $PORT_OLD..."
 docker run -d \
   --env-file "$ENV_FILE" \
-  -p "$PORT_OLD:$PORT_OLD" \
+  -p "$APP_PORT:$APP_PORT" \
   --name "$OLD_CONTAINER" \
   "$IMAGE_NAME"
+echo "✅ Novo container '$OLD_CONTAINER' rodando na porta $APP_PORT."
+echo "::endgroup::"
 
-echo "🎉 Deploy Blue/Green finalizado com sucesso!"
+deploy_end=$(date +%s)
+total_time=$((deploy_end - deploy_start))
+
+echo "::group::✅ Finalização"
+echo "🎉 Deploy Blue/Green concluído com sucesso!"
+echo "⏱️ Tempo total: ${total_time}s"
+echo "::endgroup::"

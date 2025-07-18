@@ -337,4 +337,4 @@ Desenvolvido por **Fernando Januario**
 
 * **Cargo:** DevOps
 * **Paixão:** Automações e infraestrutura inteligente
-* **LinkedIn:** [linkedin.com/in/fernando-januario](https://www.linkedin.com/in/fernando-januario)
+* **LinkedIn:** [linkedin.com/in/fernando-junior05](www.linkedin.com/in/fernando-junior05)
