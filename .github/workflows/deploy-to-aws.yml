@@ -1,0 +1,78 @@
+name: Deploy Docker para ECR e EC2 via SSM
+
+on:
+  push:
+    branches:
+      - nome-da-branch-deploy  # Exemplo: main, staging, release
+
+jobs:
+  deploy:
+    name: Build & Deploy Docker
+    runs-on: nome-do-runner-codebuild  # Substitua por um runner válido, se necessário
+
+    steps:
+      - name: Checkout do código-fonte
+        uses: actions/checkout@v4
+
+      - name: Login no Docker Hub
+        run: |
+          echo "🔐 Logando no Docker Hub..."
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Login no Amazon ECR
+        run: |
+          echo "🔐 Logando no Amazon ECR..."
+          aws ecr get-login-password --region REGIAO_AWS | \
+          docker login --username AWS --password-stdin CONTA_AWS.dkr.ecr.REGIAO_AWS.amazonaws.com
+
+      - name: Build da imagem Docker
+        run: |
+          echo "🐳 Buildando imagem Docker..."
+          docker build -t nome-da-imagem .
+
+      - name: Tag da imagem Docker
+        run: |
+          echo "🏷️  Marcando imagem Docker..."
+          docker tag nome-da-imagem:latest CONTA_AWS.dkr.ecr.REGIAO_AWS.amazonaws.com/NOME-DO-REPOSITORIO:latest
+
+      - name: Push da imagem Docker para o ECR
+        run: |
+          echo "📤 Enviando imagem para o ECR..."
+          docker push CONTA_AWS.dkr.ecr.REGIAO_AWS.amazonaws.com/NOME-DO-REPOSITORIO:latest
+
+      - name: Executar comando via SSM na EC2
+        id: ssm
+        run: |
+          echo "📡 Enviando comando via SSM para EC2..."
+          command_id=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy automatizado via GitHub Actions" \
+            --instance-ids "ID_DA_INSTANCIA_EC2" \
+            --parameters commands=["CAMINHO/DO/SCRIPT.sh"] \
+            --region REGIAO_AWS \
+            --query "Command.CommandId" \
+            --output text)
+          echo "command_id=$command_id" >> $GITHUB_ENV
+
+      - name: Aguardar execução do SSM e obter resultado
+        run: |
+          echo "⏳ Aguardando execução do comando SSM..."
+          status="InProgress"
+          while [ "$status" = "InProgress" ] || [ "$status" = "Pending" ]; do
+            sleep 5
+            status=$(aws ssm get-command-invocation \
+              --command-id ${{ env.command_id }} \
+              --instance-id ID_DA_INSTANCIA_EC2 \
+              --region REGIAO_AWS \
+              --query "Status" \
+              --output text)
+            echo "Status atual: $status"
+          done
+
+          echo "📋 Resultado do comando:"
+          aws ssm get-command-invocation \
+            --command-id ${{ env.command_id }} \
+            --instance-id ID_DA_INSTANCIA_EC2 \
+            --region REGIAO_AWS \
+            --query "StandardOutputContent" \
+            --output text
